@@ -1,0 +1,7 @@
+fastmcp
+pydantic
+cryptography
+qrcode
+httpx
+python-multipart
+pillow
