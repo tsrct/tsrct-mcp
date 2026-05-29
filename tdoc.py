@@ -7,7 +7,7 @@ class TDocHeader(BaseModel):
   alg: str = "RS256"
   cls: str
   typ: str
-  its: int # Issued timestamp
+  its: str # Issued timestamp in ISO date format: yyyy-MM-dd'T'HH:mm:ss'Z'
   length: int = Field(alias="len") # Body length
   uid: str # Unique Doc ID
   src: str # Source/Issuer UID
@@ -16,7 +16,8 @@ class TDocHeader(BaseModel):
   cty: str = "text/plain" # Content type
   acl: str = "acl_pri" # Access control
   key: Optional[str] = None # Key UID used for signing
-  nce: Optional[str] = None # Nonce
+  nce: Optional[int] = None # Nonce in seconds since epoch as long
+  agt: Optional[bool] = None # Agent delegation flag
   dsc: Optional[str] = None # Description
   exp: Optional[int] = None # Expiry timestamp
 

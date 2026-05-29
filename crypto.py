@@ -100,3 +100,36 @@ class CryptoManager:
         , enc_manager.get_jwks(use="enc")
       ]
     }
+
+  @staticmethod
+  def verify_signature(jwk: dict, data: bytes, signature_b64: str) -> bool:
+    """Verifies an RS256 signature against a public JWK."""
+    import base64
+    try:
+      # 1. Decode JWK public exponent and modulus
+      def decode_b64url(s: str) -> bytes:
+        missing_padding = len(s) % 4
+        if missing_padding:
+          s += '=' * (4 - missing_padding)
+        return base64.urlsafe_b64decode(s)
+
+      n = int.from_bytes(decode_b64url(jwk["n"]), 'big')
+      e = int.from_bytes(decode_b64url(jwk["e"]), 'big')
+
+      # 2. Reconstruct public key
+      public_numbers = rsa.RSAPublicNumbers(e, n)
+      public_key = public_numbers.public_key(backend=default_backend())
+
+      # 3. Decode signature
+      sig_bytes = decode_b64url(signature_b64)
+
+      # 4. Verify signature
+      public_key.verify(
+        sig_bytes
+        , data
+        , padding.PKCS1v15()
+        , hashes.SHA256()
+      )
+      return True
+    except Exception:
+      return False
