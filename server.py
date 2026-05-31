@@ -446,13 +446,127 @@ async def send_a2a_message(recipient_uid: str, message: str) -> str:
     except Exception as e:
       return f"Error transmitting T-Doc: {str(e)}"
 
-@mcp.tool()
-async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signed doc from MCP", content_type: Optional[str] = "text/plain") -> str:
+async def perform_ddx_handshake(ddx_uid: str, body_sig: str, body_sha: str, nce: int) -> dict:
   """
-  Creates and publishes a new signed 'cls:doc' T-Doc with standard body text or binary base64 payloads.
+  Performs the real-time cryptographic countersigning handshake with the organization's DDX server.
+  Includes wake-up pings to resolve cold-starts.
+  """
+  log(f"[*] Initiating DDX handshake for '{ddx_uid}'...")
+  
+  # 1. Fetch user's DDX list to resolve URL
+  async with httpx.AsyncClient(timeout=10.0) as client:
+    try:
+      resp = await client.get(f"{API_BASE_URL}/ddx/list/{AGENT_SRC}")
+      resp.raise_for_status()
+      ddx_list_data = resp.json()
+    except Exception as e:
+      raise Exception(f"Failed to fetch DDX list for {AGENT_SRC}: {str(e)}")
+      
+  ddx_record = None
+  records = ddx_list_data.get("data", [])
+  for rec in records:
+    header = rec.get("ddx-header", {})
+    if header.get("uid") == ddx_uid:
+      ddx_record = header
+      break
+      
+  if not ddx_record:
+    raise Exception(f"Error: DDX with UID '{ddx_uid}' was not found in the user's active wallet list.")
+    
+  url = ddx_record.get("url")
+  if not url:
+    raise Exception(f"Error: DDX record for '{ddx_uid}' does not contain an active validation 'url'.")
+    
+  # 2. Ping / Wake-up Logic to handle serverless cold-starts
+  try:
+    parsed_url = httpx.URL(url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.host}"
+    if parsed_url.port:
+      base_url += f":{parsed_url.port}"
+  except Exception as e:
+    base_url = url
+    
+  log(f"[*] Pinging DDX base URL '{base_url}' to wake it up (cold-start guard)...")
+  async with httpx.AsyncClient(timeout=3.0) as client:
+    for attempt in range(5):
+      try:
+        # Issue standard wake-up GET request. Any response code is completely acceptable!
+        ping_resp = await client.get(base_url)
+        log(f"[*] DDX node responded: {ping_resp.status_code}. Server is active and warm!")
+        break
+      except (httpx.ConnectError, httpx.ConnectTimeout, httpx.WriteTimeout, httpx.ReadTimeout) as e:
+        log(f"[!] DDX node offline or warming up (attempt {attempt+1}/5). Waiting 2 seconds...")
+        await asyncio.sleep(2)
+      except Exception as e:
+        # Any other response / SSL exception proves the socket is open and listening
+        log(f"[*] DDX node active (connected with: {str(e)}). Proceeding.")
+        break
+        
+  # 3. Construct req.val string
+  req_val = f"sig={body_sig}&sha={body_sha}&src={AGENT_SRC}&nce={nce}"
+  req_sig = AGENT_SIG_CRYPTO.sign(req_val.encode('utf-8'))
+  req_sha = calculate_tsrct_sha256(req_val)
+  
+  req_obj = {
+    "sig": req_sig
+    , "sha": req_sha
+    , "src": AGENT_SRC
+    , "key": AGENT_KEY_UID
+    , "nce": nce
+    , "val": req_val
+  }
+  
+  # Wrap the payload inside the standard affix schema consumed by TsrctDdxController
+  affix_payload = {
+    "uid": ddx_uid
+    , "req": req_obj
+  }
+  
+  # Target the correct /{ddx_id}/affix endpoint
+  affix_url = f"{url.rstrip('/')}/affix"
+  
+  # 4. POST the request challenge to the DDX Server Affix Endpoint
+  log(f"[*] Posting countersigning challenge to '{affix_url}'...")
+  async with httpx.AsyncClient(timeout=20.0) as client:
+    try:
+      post_resp = await client.post(
+        affix_url
+        , json=affix_payload
+        , headers={"Content-Type": "application/json"}
+      )
+      post_resp.raise_for_status()
+      resp_payload = post_resp.json()
+      
+      # Resolve 'data' block and extract 'res' object
+      data_block = resp_payload.get("data", resp_payload)
+      if isinstance(data_block, dict):
+        res_data = data_block.get("res")
+      else:
+        res_data = None
+        
+      if not res_data:
+        raise Exception(f"Missing 'res' object in response. Full response: {resp_payload}")
+        
+      return {
+        "uid": ddx_uid
+        , "req": req_obj
+        , "res": res_data
+      }
+    except Exception as e:
+      raise Exception(f"DDX countersigning server rejected request at {affix_url}: {str(e)}")
+
+@mcp.tool()
+async def create_and_publish_tdoc(
+  text: str
+  , description: Optional[str] = "Signed doc from MCP"
+  , content_type: Optional[str] = "text/plain"
+  , ddx_uid: Optional[str] = None
+) -> str:
+  """
+  Creates and publishes a new signed 'cls:doc' T-Doc with standard body text or binary base64 payloads, optionally asserting DDX credentials.
   """
   await ensure_authorized()
-  log(f"[*] Tool called: create_and_publish_tdoc(len={len(text)}, cty={content_type})")
+  log(f"[*] Tool called: create_and_publish_tdoc(len={len(text)}, cty={content_type}, ddx={ddx_uid})")
 
   # 1. Generate T-Doc UID formatted as {src_uid}.{uuid}
   doc_uid = f"{AGENT_UID}.{uuid.uuid4()}"
@@ -474,6 +588,7 @@ async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signe
 
   # Calculate body signature (sig) generated over the Base64 body string
   body_sig = AGENT_SIG_CRYPTO.sign(body_b64.encode('utf-8'))
+  body_sha = calculate_tsrct_sha256(body_b64)
 
   # 3. Construct the mandatory Header Fields
   header_data = {
@@ -488,7 +603,7 @@ async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signe
     , "agt": True # set agt flag to true since an agent is signing the payload
     , "uid": doc_uid
     , "len": len(body_b64)
-    , "sha": calculate_tsrct_sha256(body_b64)
+    , "sha": body_sha
     , "sig": body_sig # Put the body signature inside the header
     , "acl": "acl_pub"
   }
@@ -496,7 +611,17 @@ async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signe
   if description:
     header_data["dsc"] = description
 
-  # 4. Build and Sign T-Doc
+  # 4. Optional Real-Time DDX Countersigning Handshake
+  if ddx_uid:
+    try:
+      ddx_obj = await perform_ddx_handshake(ddx_uid, body_sig, body_sha, now_epoch)
+      header_data["ddx"] = [ddx_obj]
+      log("[*] DDX handshake completed. Embedded in header data.")
+    except Exception as e:
+      log(f"[!] DDX handshake failed: {str(e)}")
+      return f"Error performing DDX handshake: {str(e)}"
+
+  # 5. Build and Sign T-Doc
   tdoc = TDoc(header=TDocHeader(**header_data), body_b64=body_b64)
   header_b64 = b64url_encode(tdoc.header.model_dump_json(by_alias=True, exclude_none=True).encode('utf-8'))
   sign_input = f"{header_b64}.{tdoc.body_b64}".encode('utf-8')
@@ -527,12 +652,16 @@ async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signe
       return f"Error publishing T-Doc: {str(e)}"
 
 @mcp.tool()
-async def publish_image_file(file_path: str, description: Optional[str] = "Signed image T-Doc from MCP") -> str:
+async def publish_image_file(
+  file_path: str
+  , description: Optional[str] = "Signed image T-Doc from MCP"
+  , ddx_uid: Optional[str] = None
+) -> str:
   """
-  Reads a local image file (PNG/JPG), signs it, and publishes it onto the tsrct ledger as a secure 'cls:doc', 'typ:blob' T-Doc.
+  Reads a local image file (PNG/JPG), signs it, and publishes it onto the tsrct ledger as a secure 'cls:doc', 'typ:blob' T-Doc, optionally asserting DDX credentials.
   """
   await ensure_authorized()
-  log(f"[*] Tool called: publish_image_file(path='{file_path}')")
+  log(f"[*] Tool called: publish_image_file(path='{file_path}', ddx={ddx_uid})")
 
   if not os.path.exists(file_path):
     return f"Error: Image file not found at {file_path}"
@@ -557,6 +686,7 @@ async def publish_image_file(file_path: str, description: Optional[str] = "Signe
 
   # Calculate body signature (sig) generated over the Base64 body string
   body_sig = AGENT_SIG_CRYPTO.sign(body_b64.encode('utf-8'))
+  body_sha = calculate_tsrct_sha256(body_b64)
 
   # 3. Construct the mandatory Header Fields
   header_data = {
@@ -571,7 +701,7 @@ async def publish_image_file(file_path: str, description: Optional[str] = "Signe
     , "agt": True
     , "uid": doc_uid
     , "len": len(body_b64)
-    , "sha": calculate_tsrct_sha256(body_b64)
+    , "sha": body_sha
     , "sig": body_sig
     , "acl": "acl_pub"
   }
@@ -579,7 +709,17 @@ async def publish_image_file(file_path: str, description: Optional[str] = "Signe
   if description:
     header_data["dsc"] = description
 
-  # 4. Build and Sign T-Doc
+  # 4. Optional Real-Time DDX Countersigning Handshake
+  if ddx_uid:
+    try:
+      ddx_obj = await perform_ddx_handshake(ddx_uid, body_sig, body_sha, now_epoch)
+      header_data["ddx"] = [ddx_obj]
+      log("[*] DDX handshake completed. Embedded in header data.")
+    except Exception as e:
+      log(f"[!] DDX handshake failed: {str(e)}")
+      return f"Error performing DDX handshake: {str(e)}"
+
+  # 5. Build and Sign T-Doc
   tdoc = TDoc(header=TDocHeader(**header_data), body_b64=body_b64)
   header_b64 = b64url_encode(tdoc.header.model_dump_json(by_alias=True, exclude_none=True).encode('utf-8'))
   sign_input = f"{header_b64}.{tdoc.body_b64}".encode('utf-8')
@@ -587,7 +727,7 @@ async def publish_image_file(file_path: str, description: Optional[str] = "Signe
 
   tdoc_str = tdoc.encode()
 
-  # 5. Publish to local/prod API endpoint
+  # 6. Publish to local/prod API endpoint
   async with httpx.AsyncClient(timeout=30.0) as client:
     try:
       response = await client.post(
@@ -604,6 +744,30 @@ async def publish_image_file(file_path: str, description: Optional[str] = "Signe
       }, indent=2)
     except Exception as e:
       return f"Error publishing T-Doc: {str(e)}"
+
+@mcp.tool()
+async def get_logged_in_user_ddxes(uid: Optional[str] = None) -> str:
+  """
+  Fetches all available valid DDX entitlements for the currently logged-in user (or a specified UID) from the API.
+  """
+  await ensure_authorized()
+  target_uid = uid or AGENT_SRC or AGENT_UID
+  
+  log(f"[*] Tool called: get_logged_in_user_ddxes(target_uid='{target_uid}')")
+  
+  if not target_uid:
+    return "Error: No logged-in user UID found. Please ensure the agent is authorized."
+    
+  async with httpx.AsyncClient(timeout=15.0) as client:
+    try:
+      # Hit the registry list endpoint
+      response = await client.get(f"{API_BASE_URL}/ddx/list/{target_uid}")
+      response.raise_for_status()
+      ddx_data = response.json()
+      
+      return json.dumps(ddx_data, indent=2)
+    except Exception as e:
+      return f"Error fetching DDX list for {target_uid}: {str(e)}"
 
 @mcp.tool()
 async def get_tdoc_header(uid: str) -> str:
