@@ -16,6 +16,13 @@ Before running or registering your MCP server, set up your end-user identity coo
 3. Go to the credentials wallet within the app and add your primary identity card via **self-attestation** (attesting your name and title). This assigns you an active parent DDX authority record.
 4. Once the MCP server has been successfully added to Gemini CLI or your preferred LLM host, prompt the AI agent to run `"propose agent registration"`. This initiates the deferred onboarding handshake, displaying a terminal QR code for you to scan with your mobile app and bless the local agent, permanently binding its cryptographic keys to your verified tsrct identity.
 
+### Identity Storage & Security Coordinates
+All local cryptographic keys (RS256 signing and RSA-OAEP encryption key pairs), user coordinates (`AGENT_SRC`), and authorized session identifiers are securely written and persisted locally inside your user home directory at:
+```text
+~/.tsrct/identity.json
+```
+This isolates your highly sensitive private keys away from the Git workspace to prevent accidental credential leakage, while allowing the `tsrct-mcp` server to automatically refer to, load, and sign transactions dynamically.
+
 ## Installation
 
 For a fresh clone, set up a virtual environment and install the dependencies:
@@ -90,6 +97,9 @@ Below is a complete description of the cryptographic and transactional capabilit
 * **`get_my_recent_published_messages()`**
   * *What it does:* Fetch the most recently sent T-Doc messages securely from the API utilizing authentication JWT headers.
   * *Usage Prompt:* "Retrieve my recently published messages."
+* **`get_user_recd_documents()`**
+  * *What it does:* Fetches all T-Doc documents/messages where the authorized user is the recipient ('tgt' field matches the user's UID) securely using JWT authentication headers.
+  * *Usage Prompt:* "Load and list all recent documents where I am the recipient."
 * **`get_logged_in_user_ddxes(uid: str)`**
   * *What it does:* Fetches all valid active DDX credentials and entitlements currently assigned to the user or specified identity UID.
   * *Usage Prompt:* "Check what DDX entitlements are available for my user."

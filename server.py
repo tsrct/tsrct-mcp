@@ -818,9 +818,24 @@ async def get_tdoc_header(uid: str) -> str:
   Fetches the registered T-Doc header for a given UID from the API.
   """
   log(f"[*] Tool called: get_tdoc_header(uid='{uid}')")
-  async with httpx.AsyncClient(timeout=10.0) as client:
+  
+  # Append authenticating credential header if authorized
+  headers = {}
+  try:
+    await ensure_authorized()
+    jwt_path = f"/{uid}"
+    jwt_token = generate_tsrct_jwt("GET", jwt_path)
+    headers["x-tsrct-auth"] = jwt_token
+    log("[*] Appended 'x-tsrct-auth' authentication JWT header for private T-Doc retrieval.")
+  except Exception as e:
+    log(f"[*] Querying as anonymous/public (Reason: {str(e)})")
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
     try:
-      response = await client.get(f"{API_BASE_URL}/{uid}")
+      response = await client.get(
+        f"{API_BASE_URL}/{uid}"
+        , headers=headers
+      )
       response.raise_for_status()
       header_data = response.json()
       return json.dumps(header_data, indent=2)
@@ -835,9 +850,24 @@ async def get_full_tdoc(uid: str) -> str:
   Fetches the full raw T-Doc string for a given UID from the API.
   """
   log(f"[*] Tool called: get_full_tdoc(uid='{uid}')")
-  async with httpx.AsyncClient(timeout=10.0) as client:
+  
+  # Append authenticating credential header if authorized
+  headers = {}
+  try:
+    await ensure_authorized()
+    jwt_path = f"/{uid}/tdoc"
+    jwt_token = generate_tsrct_jwt("GET", jwt_path)
+    headers["x-tsrct-auth"] = jwt_token
+    log("[*] Appended 'x-tsrct-auth' authentication JWT header for private T-Doc retrieval.")
+  except Exception as e:
+    log(f"[*] Querying as anonymous/public (Reason: {str(e)})")
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
     try:
-      response = await client.get(f"{API_BASE_URL}/{uid}/tdoc")
+      response = await client.get(
+        f"{API_BASE_URL}/{uid}/tdoc"
+        , headers=headers
+      )
       response.raise_for_status()
       return response.text
     except httpx.HTTPStatusError as e:
@@ -852,9 +882,24 @@ async def get_tdoc_body(uid: str) -> str:
   Handles any content type (JSON, text, images, octet streams) based on headers.
   """
   log(f"[*] Tool called: get_tdoc_body(uid='{uid}')")
-  async with httpx.AsyncClient(timeout=10.0) as client:
+  
+  # Append authenticating credential header if authorized
+  headers = {}
+  try:
+    await ensure_authorized()
+    jwt_path = f"/{uid}/body"
+    jwt_token = generate_tsrct_jwt("GET", jwt_path)
+    headers["x-tsrct-auth"] = jwt_token
+    log("[*] Appended 'x-tsrct-auth' authentication JWT header for private T-Doc retrieval.")
+  except Exception as e:
+    log(f"[*] Querying as anonymous/public (Reason: {str(e)})")
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
     try:
-      response = await client.get(f"{API_BASE_URL}/{uid}/body")
+      response = await client.get(
+        f"{API_BASE_URL}/{uid}/body"
+        , headers=headers
+      )
       response.raise_for_status()
       
       content_type = response.headers.get("content-type", "application/octet-stream").lower()
@@ -1062,6 +1107,36 @@ async def get_my_recent_published_messages() -> str:
       return f"Error: API returned status code {e.response.status_code}. Detail: {e.response.text}"
     except Exception as e:
       return f"Error fetching recently published messages: {str(e)}"
+
+@mcp.tool()
+async def get_user_recd_documents() -> str:
+  """
+  Fetches all documents/messages where the authorized user is the recipient ('tgt' field matches the user's UID) from the secure API.
+  Uses a custom tsrct-specific JWT header 'x-tsrct-auth' for authenticated request validation.
+  """
+  await ensure_authorized()
+  log(f"[*] Tool called: get_user_recd_documents() for recipient user {AGENT_SRC}")
+
+  # 1. Custom action path inside the JWT: GET:/d/docs/tgt
+  jwt_path = "/d/docs/tgt"
+  jwt_token = generate_tsrct_jwt("GET", jwt_path)
+
+  # 2. Target API Endpoint: /d/docs/tgt
+  api_url = f"{API_BASE_URL}/d/docs/tgt"
+  log(f"[*] Dispatching GET request to {api_url} with 'x-tsrct-auth' JWT...")
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
+    try:
+      response = await client.get(
+        api_url
+        , headers={"x-tsrct-auth": jwt_token}
+      )
+      response.raise_for_status()
+      return json.dumps(response.json(), indent=2)
+    except httpx.HTTPStatusError as e:
+      return f"Error: API returned status code {e.response.status_code}. Detail: {e.response.text}"
+    except Exception as e:
+      return f"Error fetching received documents: {str(e)}"
 
 if __name__ == "__main__":
   mcp.run()
