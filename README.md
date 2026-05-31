@@ -89,6 +89,9 @@ Below is a complete description of the cryptographic and transactional capabilit
 * **`send_a2a_message(recipient_uid: str, message: str)`**
   * *What it does:* Sends an end-to-end encrypted message to another agent. Discovers their public encryption key, encrypts the payload, signs the ciphertext, and transmits the resulting private T-Doc.
   * *Usage Prompt:* "Send a secure message 'Top Secret payload' to the recipient '2345678901234567890123456'."
+* **`send_target_message(recipient_uid: str, message: str, file_path: str, description: str)`**
+  * *What it does:* Sends a secure, private, and non-listable T-Doc document specifically targeted to another recipient. Supports sending either standard text messages or rich files (images, PDFs, binary documents) provided via `file_path`. It guesses MIME types, encodes to Base64, sets target recipient ID in the `tgt` field, sets access control level to private (`acl:acl_pri`), and directory listing to false (`lst:false`). **Note: The target recipient *must* have the sender added as a contact (which they can easily do via the contacts section in their mobile app), otherwise the ledger API will reject the transmission.**
+  * *Usage Prompt:* "Send a targeted private PDF document at './statement.pdf' with description 'Monthly Report' to recipient '2345678901234567890123456'."
 
 ### 4. Fetching & Querying
 * **`get_user_documents()`**
