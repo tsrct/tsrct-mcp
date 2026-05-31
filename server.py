@@ -24,7 +24,8 @@ mcp = FastMCP("tsrct-mcp")
 DEV_MODE = os.getenv("TSRCT_DEV", "false").lower() == "true"
 API_BASE_URL = os.getenv("TSRCT_API_URL", "http://localhost:8080" if DEV_MODE else "https://api.tsrct.io")
 
-IDENTITY_FILE = "identity.json"
+IDENTITY_DIR = os.path.expanduser("~/.tsrct")
+IDENTITY_FILE = os.path.join(IDENTITY_DIR, "identity.json")
 
 def log(msg: str):
   """Logs to stderr to avoid breaking MCP JSON-RPC protocol."""
@@ -34,6 +35,9 @@ def log(msg: str):
 async def initialize_identity():
   """Loads or creates a persistent agent identity with dual keys (sig and enc). UID is deferred until authorization."""
   global AGENT_SIG_CRYPTO, AGENT_ENC_CRYPTO, AGENT_UID, AGENT_SRC, AGENT_VID, AGENT_KEY_UID
+  
+  # Ensure the secure home directory exists
+  os.makedirs(IDENTITY_DIR, exist_ok=True)
   
   if os.path.exists(IDENTITY_FILE):
     with open(IDENTITY_FILE, "r") as f:
@@ -443,19 +447,28 @@ async def send_a2a_message(recipient_uid: str, message: str) -> str:
       return f"Error transmitting T-Doc: {str(e)}"
 
 @mcp.tool()
-async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signed doc from MCP") -> str:
+async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signed doc from MCP", content_type: Optional[str] = "text/plain") -> str:
   """
-  Creates and publishes a new signed 'cls:doc' T-Doc with standard body text.
+  Creates and publishes a new signed 'cls:doc' T-Doc with standard body text or binary base64 payloads.
   """
   await ensure_authorized()
-  log(f"[*] Tool called: create_and_publish_tdoc(len={len(text)})")
+  log(f"[*] Tool called: create_and_publish_tdoc(len={len(text)}, cty={content_type})")
 
   # 1. Generate T-Doc UID formatted as {src_uid}.{uuid}
   doc_uid = f"{AGENT_UID}.{uuid.uuid4()}"
   log(f"[*] Generated T-Doc UID: {doc_uid}")
 
-  # 2. Base64 encode the body payload string
-  body_b64 = b64url_encode(text.encode('utf-8'))
+  # 2. Handle Base64-encoded image/binary payloads directly without double-encoding
+  if content_type and (content_type.startswith("image/") or content_type == "application/octet-stream"):
+    # Clean string from any formatting artifacts
+    body_b64 = text.strip().replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
+    typ_field = "blob"
+    cty_field = content_type
+  else:
+    body_b64 = b64url_encode(text.encode('utf-8'))
+    typ_field = "text"
+    cty_field = "text/plain"
+
   now_epoch = int(time.time())
   its_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -466,8 +479,8 @@ async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signe
   header_data = {
     "alg": "RS256"
     , "cls": "doc"
-    , "typ": "text"
-    , "cty": "text/plain"
+    , "typ": typ_field
+    , "cty": cty_field
     , "its": its_iso
     , "nce": now_epoch
     , "src": AGENT_SRC # The agent signs on behalf of the originator
@@ -511,6 +524,85 @@ async def create_and_publish_tdoc(text: str, description: Optional[str] = "Signe
       }, indent=2)
     except Exception as e:
       log(f"[!] Error publishing T-Doc: {str(e)}")
+      return f"Error publishing T-Doc: {str(e)}"
+
+@mcp.tool()
+async def publish_image_file(file_path: str, description: Optional[str] = "Signed image T-Doc from MCP") -> str:
+  """
+  Reads a local image file (PNG/JPG), signs it, and publishes it onto the tsrct ledger as a secure 'cls:doc', 'typ:blob' T-Doc.
+  """
+  await ensure_authorized()
+  log(f"[*] Tool called: publish_image_file(path='{file_path}')")
+
+  if not os.path.exists(file_path):
+    return f"Error: Image file not found at {file_path}"
+
+  # 1. Determine Content-Type based on extension
+  ext = os.path.splitext(file_path)[1].lower()
+  if ext == ".png":
+    cty_field = "image/png"
+  elif ext in [".jpg", ".jpeg"]:
+    cty_field = "image/jpeg"
+  else:
+    return f"Error: Unsupported image format {ext} (must be .png or .jpg)"
+
+  # 2. Read file and encode in base64url
+  with open(file_path, "rb") as f:
+    img_bytes = f.read()
+  
+  body_b64 = b64url_encode(img_bytes)
+  doc_uid = f"{AGENT_UID}.{uuid.uuid4()}"
+  now_epoch = int(time.time())
+  its_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+  # Calculate body signature (sig) generated over the Base64 body string
+  body_sig = AGENT_SIG_CRYPTO.sign(body_b64.encode('utf-8'))
+
+  # 3. Construct the mandatory Header Fields
+  header_data = {
+    "alg": "RS256"
+    , "cls": "doc"
+    , "typ": "blob"
+    , "cty": cty_field
+    , "its": its_iso
+    , "nce": now_epoch
+    , "src": AGENT_SRC
+    , "key": AGENT_UID
+    , "agt": True
+    , "uid": doc_uid
+    , "len": len(body_b64)
+    , "sha": calculate_tsrct_sha256(body_b64)
+    , "sig": body_sig
+    , "acl": "acl_pub"
+  }
+
+  if description:
+    header_data["dsc"] = description
+
+  # 4. Build and Sign T-Doc
+  tdoc = TDoc(header=TDocHeader(**header_data), body_b64=body_b64)
+  header_b64 = b64url_encode(tdoc.header.model_dump_json(by_alias=True, exclude_none=True).encode('utf-8'))
+  sign_input = f"{header_b64}.{tdoc.body_b64}".encode('utf-8')
+  tdoc.signature_b64 = AGENT_SIG_CRYPTO.sign(sign_input)
+
+  tdoc_str = tdoc.encode()
+
+  # 5. Publish to local/prod API endpoint
+  async with httpx.AsyncClient(timeout=30.0) as client:
+    try:
+      response = await client.post(
+        f"{API_BASE_URL}/"
+        , content=tdoc_str
+        , headers={"Content-Type": "text/plain"}
+      )
+      response.raise_for_status()
+      return json.dumps({
+        "status": "PUBLISHED"
+        , "uid": doc_uid
+        , "sha": tdoc.header.sha
+        , "explorer_url": f"http://localhost:5173/{doc_uid}" if "localhost" in API_BASE_URL else f"https://tsrct.io/{doc_uid}"
+      }, indent=2)
+    except Exception as e:
       return f"Error publishing T-Doc: {str(e)}"
 
 @mcp.tool()
