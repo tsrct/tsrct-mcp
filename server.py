@@ -90,6 +90,47 @@ async def ensure_authorized():
   if AGENT_UID is None:
     raise Exception("Agent is not yet authorized. Please run propose_agent_registration first.")
 
+def generate_tsrct_jwt(method: str, path: str) -> str:
+  """Generates a tsrct-specific JWT signed by the agent's signature private key."""
+  # Ensure keys are initialized and we are authorized
+  if AGENT_SIG_CRYPTO is None or not AGENT_SRC or not AGENT_KEY_UID:
+    raise Exception("Agent identity is not fully initialized or authorized.")
+
+  now_epoch = int(time.time())
+  
+  # 1. Header
+  header = {
+    "alg": "RS256"
+    , "typ": "JWT"
+    , "kid": AGENT_KEY_UID
+  }
+  
+  # 2. Payload
+  payload = {
+    "iss": AGENT_SRC
+    , "key": AGENT_KEY_UID
+    , "aud": "2222222222222222222222222"
+    , "nbf": now_epoch - 5
+    , "exp": now_epoch + 15
+    , "nce": now_epoch
+    , "act": f"{method}:{path}"
+  }
+  
+  # Encode header and payload to b64url
+  header_json = json.dumps(header, separators=(',', ':'), sort_keys=True)
+  payload_json = json.dumps(payload, separators=(',', ':'), sort_keys=True)
+  
+  header_b64 = b64url_encode(header_json.encode('utf-8'))
+  payload_b64 = b64url_encode(payload_json.encode('utf-8'))
+  
+  # Construct the signature input
+  sign_input = f"{header_b64}.{payload_b64}".encode('utf-8')
+  
+  # Sign using agent's private signing key
+  signature_b64 = AGENT_SIG_CRYPTO.sign(sign_input)
+  
+  return f"{header_b64}.{payload_b64}.{signature_b64}"
+
 @mcp.resource("tsrct://identity")
 async def get_identity_status() -> str:
   """Returns the current agent identity status and details."""
@@ -606,6 +647,7 @@ async def create_and_publish_tdoc(
     , "sha": body_sha
     , "sig": body_sig # Put the body signature inside the header
     , "acl": "acl_pub"
+    , "lst": True
   }
 
   if description:
@@ -704,6 +746,7 @@ async def publish_image_file(
     , "sha": body_sha
     , "sig": body_sig
     , "acl": "acl_pub"
+    , "lst": True
   }
 
   if description:
@@ -959,6 +1002,66 @@ async def validate_tdoc(tdoc_raw: Optional[str] = None, uid: Optional[str] = Non
       report["details"].append("Cryptographic signature (RS256) verification failed.")
 
     return json.dumps(report, indent=2)
+
+@mcp.tool()
+async def get_user_documents() -> str:
+  """
+  Fetches all documents (including non-listable ones) for the authorized agent/user from the secure API.
+  Uses a custom tsrct-specific JWT header 'x-tsrct-auth' for authenticated request validation.
+  """
+  await ensure_authorized()
+  log(f"[*] Tool called: get_user_documents() for user {AGENT_SRC}")
+
+  # The custom action path for the JWT is: GET:/d/docs/src/{uid} where {uid} is AGENT_SRC
+  jwt_path = f"/d/docs/src/{AGENT_SRC}"
+  jwt_token = generate_tsrct_jwt("GET", jwt_path)
+
+  # Prepare API request url: /d/docs/src/{uid}
+  api_url = f"{API_BASE_URL}/d/docs/src/{AGENT_SRC}"
+  log(f"[*] Dispatching GET request to {api_url} with 'x-tsrct-auth' JWT...")
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
+    try:
+      response = await client.get(
+        api_url
+        , headers={"x-tsrct-auth": jwt_token}
+      )
+      response.raise_for_status()
+      return json.dumps(response.json(), indent=2)
+    except httpx.HTTPStatusError as e:
+      return f"Error: API returned status code {e.response.status_code}. Detail: {e.response.text}"
+    except Exception as e:
+      return f"Error fetching user documents: {str(e)}"
+
+@mcp.tool()
+async def get_my_recent_published_messages() -> str:
+  """
+  Fetches the user's recently published T-Doc messages from the secure API.
+  Sends the generated JWT as the 'x-tsrct-auth' header to the '/d/docs/src' endpoint.
+  """
+  await ensure_authorized()
+  log(f"[*] Tool called: get_my_recent_published_messages() for user {AGENT_SRC}")
+
+  # 1. Custom action path inside the JWT: GET:/d/docs/src
+  jwt_path = "/d/docs/src"
+  jwt_token = generate_tsrct_jwt("GET", jwt_path)
+
+  # 2. Target API Endpoint: /d/docs/src
+  api_url = f"{API_BASE_URL}/d/docs/src"
+  log(f"[*] Dispatching GET request to {api_url} with 'x-tsrct-auth' JWT...")
+
+  async with httpx.AsyncClient(timeout=15.0) as client:
+    try:
+      response = await client.get(
+        api_url
+        , headers={"x-tsrct-auth": jwt_token}
+      )
+      response.raise_for_status()
+      return json.dumps(response.json(), indent=2)
+    except httpx.HTTPStatusError as e:
+      return f"Error: API returned status code {e.response.status_code}. Detail: {e.response.text}"
+    except Exception as e:
+      return f"Error fetching recently published messages: {str(e)}"
 
 if __name__ == "__main__":
   mcp.run()
