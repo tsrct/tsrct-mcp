@@ -20,6 +20,7 @@ class TDocHeader(BaseModel):
   agt: Optional[bool] = None # Agent delegation flag
   dsc: Optional[str] = None # Description
   exp: Optional[int] = None # Expiry timestamp
+  ddx: Optional[list] = None # List of countersigned DDX credentials
 
   class Config:
     populate_by_name = True
