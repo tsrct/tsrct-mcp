@@ -487,6 +487,104 @@ async def send_a2a_message(recipient_uid: str, message: str) -> str:
     except Exception as e:
       return f"Error transmitting T-Doc: {str(e)}"
 
+@mcp.tool()
+async def send_target_message(
+  recipient_uid: str
+  , message: Optional[str] = None
+  , file_path: Optional[str] = None
+  , description: Optional[str] = "Targeted document from MCP"
+) -> str:
+  """
+  Sends a secure, private, and non-listable T-Doc message or file specifically targeted to a recipient user.
+  Supports text, images, PDFs, and binary files. Sets 'tgt' to recipient_uid, 'acl' to 'acl_pri', and 'lst' to False.
+  """
+  await ensure_authorized()
+  if not validate_verhoeff(recipient_uid):
+    return f"Error: Invalid recipient UID '{recipient_uid}' (Verhoeff check failed)."
+
+  # 1. Resolve payload body, content type, and type classification
+  if file_path:
+    if not os.path.exists(file_path):
+      return f"Error: File not found at {file_path}"
+      
+    import mimetypes
+    cty_field, _ = mimetypes.guess_type(file_path)
+    if not cty_field:
+      cty_field = "application/octet-stream"
+      
+    log(f"[*] Reading target file '{file_path}' (MIME: {cty_field})...")
+    with open(file_path, "rb") as f:
+      file_bytes = f.read()
+      
+    body_b64 = b64url_encode(file_bytes)
+    typ_field = "blob" if not cty_field.startswith("text/") else "text"
+  elif message:
+    log(f"[*] Encoding target text message (length={len(message)})...")
+    body_b64 = b64url_encode(message.encode('utf-8'))
+    cty_field = "text/plain"
+    typ_field = "text"
+  else:
+    return "Error: You must provide either 'message' or 'file_path' to send."
+
+  # 2. Cryptographic sign over body Base64
+  body_sig = AGENT_SIG_CRYPTO.sign(body_b64.encode('utf-8'))
+  body_sha = calculate_tsrct_sha256(body_b64)
+
+  # 3. Build T-Doc Header
+  doc_uid = f"{AGENT_UID}.{uuid.uuid4()}"
+  its_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+  now_epoch = int(time.time())
+  
+  header_data = {
+    "alg": "RS256"
+    , "cls": "doc"
+    , "typ": typ_field
+    , "cty": cty_field
+    , "its": its_iso
+    , "nce": now_epoch
+    , "uid": doc_uid
+    , "src": AGENT_SRC
+    , "key": AGENT_UID
+    , "agt": True
+    , "len": len(body_b64)
+    , "sha": body_sha
+    , "sig": body_sig
+    , "acl": "acl_pri"
+    , "lst": False
+    , "tgt": recipient_uid
+  }
+
+  if description:
+    header_data["dsc"] = description
+
+  tdoc = TDoc(header=TDocHeader(**header_data), body_b64=body_b64)
+  
+  # JWS Signature: base64(header) + "." + base64(body)
+  header_b64 = b64url_encode(tdoc.header.model_dump_json(by_alias=True, exclude_none=True).encode('utf-8'))
+  sign_input = f"{header_b64}.{tdoc.body_b64}".encode('utf-8')
+  tdoc.signature_b64 = AGENT_SIG_CRYPTO.sign(sign_input)
+
+  # 4. Transmit T-Doc to ledger API root endpoint
+  log(f"[*] Transmitting targeted document (len={len(tdoc.encode())}) to ledger...")
+  async with httpx.AsyncClient(timeout=30.0) as client:
+    try:
+      post_response = await client.post(
+        f"{API_BASE_URL}/"
+        , content=tdoc.encode()
+        , headers={"Content-Type": "text/plain"}
+      )
+      post_response.raise_for_status()
+      return json.dumps({
+        "status": "SENT"
+        , "uid": doc_uid
+        , "sha": tdoc.header.sha
+        , "recipient": recipient_uid
+        , "type": typ_field
+        , "content_type": cty_field
+      }, indent=2)
+    except Exception as e:
+      return f"Error transmitting T-Doc: {str(e)}"
+
 async def perform_ddx_handshake(ddx_uid: str, body_sig: str, body_sha: str, nce: int) -> dict:
   """
   Performs the real-time cryptographic countersigning handshake with the organization's DDX server.

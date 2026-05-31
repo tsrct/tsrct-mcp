@@ -22,6 +22,7 @@ class TDocHeader(BaseModel):
   exp: Optional[int] = None # Expiry timestamp
   ddx: Optional[list] = None # List of countersigned DDX credentials
   lst: Optional[bool] = None # Listable in search directories flag
+  tgt: Optional[str] = None # Target/Recipient UID
 
   class Config:
     populate_by_name = True
