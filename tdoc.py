@@ -21,6 +21,7 @@ class TDocHeader(BaseModel):
   dsc: Optional[str] = None # Description
   exp: Optional[int] = None # Expiry timestamp
   ddx: Optional[list] = None # List of countersigned DDX credentials
+  lst: Optional[bool] = None # Listable in search directories flag
 
   class Config:
     populate_by_name = True
