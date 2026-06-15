@@ -11,7 +11,10 @@ A Python-native Model Context Protocol (MCP) server for the `tsrct` protocol.
 
 ## Setup
 Before running or registering your MCP server, set up your end-user identity coordinates:
-1. Download and install the **tsrct** mobile application on your mobile device.
+1. Download and install the **tsrct** mobile application on your mobile device
+   1. Android App: https://play.google.com/store/apps/details?id=io.tsrct.app
+   2. iOS via Testflight: https://testflight.apple.com/join/JGmKXSL6
+   3. Mobile app user guide: https://docs.tsrct.io/mobile-app.html
 2. Launch the app and create your decentralized cryptographic account.
 3. Go to the credentials wallet within the app and add your primary identity card via **self-attestation** (attesting your name and title). This assigns you an active parent DDX authority record.
 4. Once the MCP server has been successfully added to Gemini CLI or your preferred LLM host, prompt the AI agent to run `"propose agent registration"`. This initiates the deferred onboarding handshake, displaying a terminal QR code for you to scan with your mobile app and bless the local agent, permanently binding its cryptographic keys to your verified tsrct identity.
