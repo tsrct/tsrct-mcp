@@ -7,15 +7,13 @@ import time
 import httpx
 from datetime import datetime, timezone
 
-# Add the current directory to sys.path to import crypto
-sys.path.append(os.getcwd())
-
-from crypto import CryptoManager
-from tdoc import TDoc, TDocHeader
-from utils import b64url_encode, calculate_tsrct_sha256
+from tsrct_mcp.crypto import CryptoManager
+from tsrct_mcp.tdoc import TDoc, TDocHeader
+from tsrct_mcp.utils import b64url_encode, calculate_tsrct_sha256
 
 async def main():
-  IDENTITY_FILE = "identity.json"
+  IDENTITY_FILE = os.path.expanduser("~/.tsrct/identity.json")
+  API_BASE_URL = os.getenv("TSRCT_API_URL", "https://api.tsrct.io")
   if not os.path.exists(IDENTITY_FILE):
     print("Error: identity.json not found.")
     return
@@ -62,8 +60,8 @@ async def main():
   # Test local validation using public keys fetched from API
   async with httpx.AsyncClient() as client:
     try:
-      print(f"\n[*] Fetching registered public keys for {AGENT_UID} from local API...")
-      resp = await client.get(f"http://localhost:8080/{AGENT_UID}/body")
+      print(f"\n[*] Fetching registered public keys for {AGENT_UID} from API...")
+      resp = await client.get(f"{API_BASE_URL}/{AGENT_UID}/body")
       resp.raise_for_status()
       jwk_set = resp.json()
       

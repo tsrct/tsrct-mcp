@@ -1,18 +1,15 @@
 import json
 import os
-import sys
 
-# Add the current directory to sys.path to import crypto
-sys.path.append(os.getcwd())
-
-from crypto import CryptoManager
+from tsrct_mcp.crypto import CryptoManager
 
 def main():
-    if not os.path.exists("identity.json"):
+    identity_file = os.path.expanduser("~/.tsrct/identity.json")
+    if not os.path.exists(identity_file):
         print("Error: identity.json not found.")
         return
 
-    with open("identity.json", "r") as f:
+    with open(identity_file, "r") as f:
         data = json.load(f)
         sig_crypto = CryptoManager(data["sig_private_key"].encode('utf-8'))
         enc_crypto = CryptoManager(data["enc_private_key"].encode('utf-8'))

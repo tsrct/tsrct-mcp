@@ -13,16 +13,16 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 from fastmcp import FastMCP
-from crypto import CryptoManager
-from tdoc import TDoc, TDocHeader
-from utils import validate_verhoeff, b64url_encode, calculate_tsrct_sha256
+from .crypto import CryptoManager
+from .tdoc import TDoc, TDocHeader
+from .utils import validate_verhoeff, b64url_encode, calculate_tsrct_sha256
 
 # Initialize FastMCP server
 mcp = FastMCP("tsrct-mcp")
 
 # Configuration
 DEV_MODE = os.getenv("TSRCT_DEV", "false").lower() == "true"
-API_BASE_URL = os.getenv("TSRCT_API_URL", "http://localhost:8080" if DEV_MODE else "https://api.tsrct.io")
+API_BASE_URL = os.getenv("TSRCT_API_URL", "https://api.tsrct.io")
 
 IDENTITY_DIR = os.path.expanduser("~/.tsrct")
 IDENTITY_FILE = os.path.join(IDENTITY_DIR, "identity.json")
@@ -31,6 +31,13 @@ def log(msg: str):
   """Logs to stderr to avoid breaking MCP JSON-RPC protocol."""
   sys.stderr.write(f"{msg}\n")
   sys.stderr.flush()
+
+def save_identity_file(data: dict):
+  """Saves the identity JSON data atomically to prevent corruption on interrupt."""
+  temp_file = IDENTITY_FILE + ".tmp"
+  with open(temp_file, "w") as f:
+    json.dump(data, f, indent=2)
+  os.replace(temp_file, IDENTITY_FILE)
 
 async def initialize_identity():
   """Loads or creates a persistent agent identity with dual keys (sig and enc). UID is deferred until authorization."""
@@ -61,15 +68,14 @@ async def initialize_identity():
   log("[!] Successfully initialized cryptographic keys. UID pending authorization.")
 
   # Save partial identity to file
-  with open(IDENTITY_FILE, "w") as f:
-    json.dump({
-      "uid": AGENT_UID
-      , "src": AGENT_SRC
-      , "vid": AGENT_VID
-      , "key_uid": AGENT_KEY_UID
-      , "sig_private_key": AGENT_SIG_CRYPTO.get_private_key_pem().decode('utf-8')
-      , "enc_private_key": AGENT_ENC_CRYPTO.get_private_key_pem().decode('utf-8')
-    }, f, indent=2)
+  save_identity_file({
+    "uid": AGENT_UID
+    , "src": AGENT_SRC
+    , "vid": AGENT_VID
+    , "key_uid": AGENT_KEY_UID
+    , "sig_private_key": AGENT_SIG_CRYPTO.get_private_key_pem().decode('utf-8')
+    , "enc_private_key": AGENT_ENC_CRYPTO.get_private_key_pem().decode('utf-8')
+  })
 
 # These will be set by initialize_identity()
 AGENT_SIG_CRYPTO = None
@@ -269,6 +275,8 @@ async def propose_agent_registration(agent_name: str, agent_description: str) ->
 
   agent_name: Lowercase alphanumeric string with dashes/underscores, max 32 chars.
   agent_description: Human readable description of the agent.
+
+  After showing the QR code, automatically proceed to wait_for_registration
   """
   log(f"[*] Tool called: propose_agent_registration(agent_name='{agent_name}', agent_description='{agent_description}')")
 
@@ -369,7 +377,11 @@ async def propose_agent_registration(agent_name: str, agent_description: str) ->
 async def wait_for_registration(session_id: str) -> str:
   """
   Polls the API for up to 5 minutes to check if the session has been authorized.
+
+  If the session status is authorized, automatically update the identity.json with
+  the originator uid, key uid, and other details
   """
+  await ensure_identity()
   start_time = time.time()
   timeout = 5 * 60 # 5 minutes
   
@@ -392,15 +404,14 @@ async def wait_for_registration(session_id: str) -> str:
           
           if AGENT_UID:
              log(f"[*] Agent authorized! Assigned UID: {AGENT_UID}")
-             with open(IDENTITY_FILE, "w") as f:
-               json.dump({
-                 "uid": AGENT_UID
-                 , "src": AGENT_SRC
-                 , "vid": AGENT_VID
-                 , "key_uid": AGENT_KEY_UID
-                 , "sig_private_key": AGENT_SIG_CRYPTO.get_private_key_pem().decode('utf-8')
-                 , "enc_private_key": AGENT_ENC_CRYPTO.get_private_key_pem().decode('utf-8')
-               }, f, indent=2)
+             save_identity_file({
+               "uid": AGENT_UID
+               , "src": AGENT_SRC
+               , "vid": AGENT_VID
+               , "key_uid": AGENT_KEY_UID
+               , "sig_private_key": AGENT_SIG_CRYPTO.get_private_key_pem().decode('utf-8')
+               , "enc_private_key": AGENT_ENC_CRYPTO.get_private_key_pem().decode('utf-8')
+             })
           else:
              log("[!] Warning: Authorized but no uid received in data payload.")
 
@@ -408,7 +419,7 @@ async def wait_for_registration(session_id: str) -> str:
         
         await asyncio.sleep(5) # Poll every 5 seconds
       except Exception as e:
-        # Intermittent errors are ignored
+        log(f"[!] Polling error (will retry): {str(e)}")
         await asyncio.sleep(5)
 
     return f"TIMEOUT: Registration session {session_id} timed out after 5 minutes."
@@ -1236,5 +1247,8 @@ async def get_user_recd_documents() -> str:
     except Exception as e:
       return f"Error fetching received documents: {str(e)}"
 
-if __name__ == "__main__":
+def main():
   mcp.run()
+
+if __name__ == "__main__":
+  main()

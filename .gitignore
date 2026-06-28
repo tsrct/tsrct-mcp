@@ -217,3 +217,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# tsrct agent identity (private keys) - must never be committed
+identity.json
+**/identity.json
+.tsrct/

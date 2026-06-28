@@ -4,17 +4,20 @@ import json
 import httpx
 import random
 import sys
-from crypto import CryptoManager
+from tsrct_mcp.crypto import CryptoManager
 
 # Configuration
-API_BASE_URL = "http://localhost:8080"
-IDENTITY_FILE = "identity.json"
+API_BASE_URL = os.getenv("TSRCT_API_URL", "https://api.tsrct.io")
+IDENTITY_DIR = os.path.expanduser("~/.tsrct")
+IDENTITY_FILE = os.path.join(IDENTITY_DIR, "identity.json")
 
 def log(msg: str):
   sys.stderr.write(f"{msg}\n")
   sys.stderr.flush()
 
 async def initialize_identity():
+  os.makedirs(IDENTITY_DIR, exist_ok=True)
+
   if os.path.exists(IDENTITY_FILE):
     log("[*] Identity already exists.")
     return

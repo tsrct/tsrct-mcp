@@ -5,14 +5,11 @@ import json
 import os
 import sys
 
-# Add the current directory to sys.path to import crypto
-sys.path.append(os.getcwd())
-
-from crypto import CryptoManager
+from tsrct_mcp.crypto import CryptoManager
 
 async def test():
-    API_BASE_URL = "http://localhost:8080"
-    IDENTITY_FILE = "identity.json"
+    API_BASE_URL = os.getenv("TSRCT_API_URL", "https://api.tsrct.io")
+    IDENTITY_FILE = os.path.expanduser("~/.tsrct/identity.json")
     
     print(f"[*] Reading identity...")
     if not os.path.exists(IDENTITY_FILE):

@@ -7,12 +7,9 @@ import time
 import httpx
 from datetime import datetime, timezone
 
-# Add the current directory to sys.path to import crypto
-sys.path.append(os.getcwd())
-
-from crypto import CryptoManager
-from tdoc import TDoc, TDocHeader
-from utils import b64url_encode, calculate_tsrct_sha256
+from tsrct_mcp.crypto import CryptoManager
+from tsrct_mcp.tdoc import TDoc, TDocHeader
+from tsrct_mcp.utils import b64url_encode, calculate_tsrct_sha256
 
 async def main():
   IDENTITY_FILE = os.path.expanduser("~/.tsrct/identity.json")
@@ -63,7 +60,7 @@ async def main():
 
   raw_tdoc = tdoc.encode()
 
-  API_BASE_URL = "http://localhost:8080"
+  API_BASE_URL = os.getenv("TSRCT_API_URL", "https://api.tsrct.io")
   async with httpx.AsyncClient(timeout=10.0) as client:
     try:
       print(f"[*] Posting T-Doc to API root...")

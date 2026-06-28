@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
-from utils import b64url_encode, calculate_tsrct_sha256
+from .utils import b64url_encode, calculate_tsrct_sha256
 
 class TDocHeader(BaseModel):
   alg: str = "RS256"
