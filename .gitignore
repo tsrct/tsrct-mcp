@@ -222,3 +222,4 @@ __marimo__/
 identity.json
 **/identity.json
 .tsrct/
+publish.sh
