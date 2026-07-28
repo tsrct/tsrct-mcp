@@ -270,13 +270,15 @@ def get_mcp_guide() -> str:
 @mcp.tool()
 async def propose_agent_registration(agent_name: str, agent_description: str) -> str:
   """
-  Initiates agent onboarding by creating a session on the API.
-  Returns a QR code for the user to scan with their mobile app.
+  Initiates agent onboarding. Call this ONCE to create a new agent identity.
+  Do NOT call if identity.json already exists with a uid — the agent is already registered.
 
-  agent_name: Lowercase alphanumeric string with dashes/underscores, max 32 chars.
-  agent_description: Human readable description of the agent.
+  agent_name: lowercase alphanumeric + dashes/underscores, max 32 chars (e.g. "claude-code").
+  agent_description: human-readable string (e.g. "Claude Code AI coding assistant").
 
-  After showing the QR code, automatically proceed to wait_for_registration
+  Returns a terminal QR code and a session_id. After displaying the QR code to the user,
+  IMMEDIATELY call wait_for_registration(session_id=<returned session_id>) — do not wait
+  for the user to confirm they scanned it first.
   """
   log(f"[*] Tool called: propose_agent_registration(agent_name='{agent_name}', agent_description='{agent_description}')")
 
@@ -376,10 +378,13 @@ async def propose_agent_registration(agent_name: str, agent_description: str) ->
 @mcp.tool()
 async def wait_for_registration(session_id: str) -> str:
   """
-  Polls the API for up to 5 minutes to check if the session has been authorized.
+  Polls the API until the user scans the QR code and authorizes the session (up to 5 min).
+  Call this immediately after propose_agent_registration — pass the session_id it returned.
 
-  If the session status is authorized, automatically update the identity.json with
-  the originator uid, key uid, and other details
+  session_id: the UUID string returned by propose_agent_registration (e.g. "f37dbc2a-...").
+
+  On success: saves uid, src, key_uid to identity.json and returns the assigned Agent UID.
+  On timeout: returns a TIMEOUT message — user must re-run propose_agent_registration.
   """
   await ensure_identity()
   start_time = time.time()
@@ -427,7 +432,14 @@ async def wait_for_registration(session_id: str) -> str:
 @mcp.tool()
 async def send_a2a_message(recipient_uid: str, message: str) -> str:
   """
-  Sends an encrypted and signed T-Doc message to another agent.
+  Sends an RSA-encrypted, signed T-Doc to another agent (agent-to-agent messaging).
+  The message body is encrypted with the recipient's public enc key before transmission.
+  Use send_target_message instead for plain private messages to human users.
+
+  recipient_uid: 25-digit tsrct UID of the target agent (must pass Verhoeff checksum).
+  message: plaintext string — will be encrypted in transit, only recipient can decrypt.
+
+  Returns: success message with the T-Doc hash, or an error string.
   """
   await ensure_authorized()
   if not validate_verhoeff(recipient_uid):
@@ -506,8 +518,16 @@ async def send_target_message(
   , description: Optional[str] = "Targeted document from MCP"
 ) -> str:
   """
-  Sends a secure, private, and non-listable T-Doc message or file specifically targeted to a recipient user.
-  Supports text, images, PDFs, and binary files. Sets 'tgt' to recipient_uid, 'acl' to 'acl_pri', and 'lst' to False.
+  Sends a private T-Doc directly to a specific recipient (sets tgt, acl_pri, lst=false).
+  Use this for direct messages or file delivery to a known tsrct user/agent.
+  Provide either message or file_path — not both.
+
+  recipient_uid: 25-digit tsrct UID of the recipient (must pass Verhoeff checksum).
+  message: plain text string to send.
+  file_path: absolute path to a local file (text, image, PDF, binary — any MIME type).
+  description: stored in the header 'dsc' field.
+
+  Returns: JSON with status, uid, sha, recipient, type, content_type on success.
   """
   await ensure_authorized()
   if not validate_verhoeff(recipient_uid):
@@ -713,7 +733,19 @@ async def create_and_publish_tdoc(
   , ddx_uid: Optional[str] = None
 ) -> str:
   """
-  Creates and publishes a new signed 'cls:doc' T-Doc with standard body text or binary base64 payloads, optionally asserting DDX credentials.
+  Creates, signs, and publishes a text T-Doc to the tsrct ledger as the authorized agent.
+  Requires agent to be authorized (identity.json must have a uid).
+
+  text: the document body (plain text or JSON string).
+  description: short human-readable label stored in the header 'dsc' field.
+  content_type: MIME type — "text/plain" (default) or "application/json".
+  ddx_uid: optional. To assert a DDX credential (e.g. your tsrct.io identity), pass the
+    full DDX UID from get_logged_in_user_ddxes — format: "{issuer_uid}.{user_uid}.{suffix}"
+    (e.g. "2222222222222222222222222.9000990009900099000990009.20241231124933-ddx-name-saurabh-gupta").
+    The DDX node will be contacted for a real-time countersignature; if that fails the
+    whole publish is aborted. Call get_logged_in_user_ddxes first to get valid UIDs.
+
+  Returns: JSON with status, uid, sha, and the raw tdoc string on success.
   """
   await ensure_authorized()
   log(f"[*] Tool called: create_and_publish_tdoc(len={len(text)}, cty={content_type}, ddx={ddx_uid})")
@@ -809,7 +841,15 @@ async def publish_image_file(
   , ddx_uid: Optional[str] = None
 ) -> str:
   """
-  Reads a local image file (PNG/JPG), signs it, and publishes it onto the tsrct ledger as a secure 'cls:doc', 'typ:blob' T-Doc, optionally asserting DDX credentials.
+  Reads a local image file, signs it, and publishes it as a cls:doc / typ:blob T-Doc.
+  Supported formats: .png, .jpg/.jpeg only.
+
+  file_path: absolute or relative path to the image file on the local filesystem.
+  description: stored in the header 'dsc' field.
+  ddx_uid: optional DDX credential UID (same format as create_and_publish_tdoc).
+    Call get_logged_in_user_ddxes first to get valid UIDs.
+
+  Returns: JSON with status, uid, sha, and an explorer_url on success.
   """
   await ensure_authorized()
   log(f"[*] Tool called: publish_image_file(path='{file_path}', ddx={ddx_uid})")
@@ -900,7 +940,14 @@ async def publish_image_file(
 @mcp.tool()
 async def get_logged_in_user_ddxes(uid: Optional[str] = None) -> str:
   """
-  Fetches all available valid DDX entitlements for the currently logged-in user (or a specified UID) from the API.
+  Fetches all active DDX credentials held by the logged-in user (or any specified UID).
+  Call this BEFORE create_and_publish_tdoc or publish_image_file when you need a ddx_uid —
+  the ddx_uid to pass is the "uid" field inside each "ddx-header" object in the response.
+
+  uid: optional tsrct UID (25 digits). Defaults to the logged-in user's UID.
+
+  Returns: JSON array of DDX records, each with "ddx-header" (uid, dom, dsc, url, act),
+    "ddx-body" (spec, data, entitlements), and "src-header" (issuing org info).
   """
   await ensure_authorized()
   target_uid = uid or AGENT_SRC or AGENT_UID
@@ -924,7 +971,12 @@ async def get_logged_in_user_ddxes(uid: Optional[str] = None) -> str:
 @mcp.tool()
 async def get_tdoc_header(uid: str) -> str:
   """
-  Fetches the registered T-Doc header for a given UID from the API.
+  Fetches the JSON metadata header for any T-Doc by its UID. Works for public and private docs.
+  Use this to inspect alg, cls, typ, src, key, sha, acl, its, dsc without fetching the full body.
+
+  uid: a tsrct document UID (format: "{src_uid}.{suffix}", e.g. "9000990009900099000990009.agt.20260713...").
+
+  Returns: JSON header object. For private docs, attaches x-tsrct-auth JWT automatically.
   """
   log(f"[*] Tool called: get_tdoc_header(uid='{uid}')")
   
@@ -956,7 +1008,13 @@ async def get_tdoc_header(uid: str) -> str:
 @mcp.tool()
 async def get_full_tdoc(uid: str) -> str:
   """
-  Fetches the full raw T-Doc string for a given UID from the API.
+  Fetches the complete raw T-Doc string (header.body.signature) for a given UID.
+  Use this when you need the raw tdoc for validation, forwarding, or audit purposes.
+  For just the body content, use get_tdoc_body instead.
+
+  uid: a tsrct document UID.
+
+  Returns: single-line base64url string "headerB64.bodyB64.sigB64".
   """
   log(f"[*] Tool called: get_full_tdoc(uid='{uid}')")
   
@@ -987,8 +1045,17 @@ async def get_full_tdoc(uid: str) -> str:
 @mcp.tool()
 async def get_tdoc_body(uid: str) -> str:
   """
-  Fetches the decrypted/decoded T-Doc body for a given UID from the API.
-  Handles any content type (JSON, text, images, octet streams) based on headers.
+  Fetches and decodes the body payload of a T-Doc by UID. Handles all content types.
+  Use this to read the actual content of a document (text, JSON, image, binary).
+
+  uid: a tsrct document UID.
+
+  Returns vary by content-type:
+    - text/*: plain string
+    - application/json: pretty-printed JSON
+    - image/*: inline markdown image tag with base64 data URI
+    - other: base64-encoded binary with length info
+  Attaches x-tsrct-auth JWT automatically for private (acl_pri) documents.
   """
   log(f"[*] Tool called: get_tdoc_body(uid='{uid}')")
   
@@ -1053,8 +1120,15 @@ async def get_tdoc_body(uid: str) -> str:
 @mcp.tool()
 async def validate_tdoc(tdoc_raw: Optional[str] = None, uid: Optional[str] = None) -> str:
   """
-  Validates a raw T-Doc string or fetches and validates a registered T-Doc by UID.
-  Checks both SHA-256 body integrity and the RS256 signature against the retrieved key.
+  Validates a T-Doc's integrity and cryptographic signature. Provide one of:
+    tdoc_raw: the raw "headerB64.bodyB64.sigB64" string (e.g. from get_full_tdoc).
+    uid: a registered T-Doc UID — the raw tdoc will be fetched automatically.
+
+  Checks performed:
+    1. SHA-256 of base64 body string matches header 'sha' field.
+    2. RS256 signature over "headerB64.bodyB64" verified against the public key at /{key}/body.
+
+  Returns: JSON report with sha_check, sig_check (PASSED/FAILED), and details array.
   """
   log(f"[*] Tool called: validate_tdoc(tdoc_raw={'provided' if tdoc_raw else 'None'}, uid={uid})")
   
@@ -1160,8 +1234,11 @@ async def validate_tdoc(tdoc_raw: Optional[str] = None, uid: Optional[str] = Non
 @mcp.tool()
 async def get_user_documents() -> str:
   """
-  Fetches all documents (including non-listable ones) for the authorized agent/user from the secure API.
-  Uses a custom tsrct-specific JWT header 'x-tsrct-auth' for authenticated request validation.
+  Fetches all T-Docs published by the logged-in user, including private (acl_pri) ones.
+  Use this to see everything the user has ever published, not just their public feed.
+  No parameters needed — uses the authorized agent's src UID automatically.
+
+  Returns: JSON array of document headers for all docs where src matches the user.
   """
   await ensure_authorized()
   log(f"[*] Tool called: get_user_documents() for user {AGENT_SRC}")
@@ -1190,8 +1267,11 @@ async def get_user_documents() -> str:
 @mcp.tool()
 async def get_my_recent_published_messages() -> str:
   """
-  Fetches the user's recently published T-Doc messages from the secure API.
-  Sends the generated JWT as the 'x-tsrct-auth' header to the '/d/docs/src' endpoint.
+  Fetches the user's most recently published public T-Doc messages.
+  Lighter than get_user_documents — returns the recent public feed, not all docs.
+  No parameters needed — uses the authorized agent's src UID automatically.
+
+  Returns: JSON array of recent document headers published by the user.
   """
   await ensure_authorized()
   log(f"[*] Tool called: get_my_recent_published_messages() for user {AGENT_SRC}")
@@ -1220,8 +1300,11 @@ async def get_my_recent_published_messages() -> str:
 @mcp.tool()
 async def get_user_recd_documents() -> str:
   """
-  Fetches all documents/messages where the authorized user is the recipient ('tgt' field matches the user's UID) from the secure API.
-  Uses a custom tsrct-specific JWT header 'x-tsrct-auth' for authenticated request validation.
+  Fetches all T-Docs where the logged-in user is the recipient (tgt field = user's UID).
+  Use this to read incoming messages sent via send_target_message or send_a2a_message.
+  No parameters needed — uses the authorized agent's src UID automatically.
+
+  Returns: JSON array of document headers for all docs targeted to the user.
   """
   await ensure_authorized()
   log(f"[*] Tool called: get_user_recd_documents() for recipient user {AGENT_SRC}")
